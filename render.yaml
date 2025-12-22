@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: juggernaut-rail
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: API_KEY
+        value: juggernaut-production-2025
+      - key: PORT
+        value: 8000
