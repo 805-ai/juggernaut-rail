@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  juggernaut-rail:
+    build: .
+    container_name: juggernaut-rail
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - API_KEY=${API_KEY:-dev-key-change-in-production}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - STRIPE_API_KEY=${STRIPE_API_KEY:-sk_test_placeholder}
+      - DEBUG=${DEBUG:-false}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - juggernaut-network
+
+  # Optional: MongoDB for receipt persistence
+  mongodb:
+    image: mongo:7
+    container_name: juggernaut-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=admin
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-changeme}
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - juggernaut-network
+    profiles:
+      - with-mongodb
+
+  # Optional: Redis for caching
+  redis:
+    image: redis:7-alpine
+    container_name: juggernaut-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - juggernaut-network
+    profiles:
+      - with-redis
+
+networks:
+  juggernaut-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
