@@ -19,12 +19,8 @@ RUN groupadd -r juggernaut && useradd -r -g juggernaut juggernaut
 # Install dependencies
 WORKDIR /app
 
-# Copy requirements first for caching
-COPY pyproject.toml .
-
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir hatch && \
     pip install --no-cache-dir \
         fastapi>=0.115.0 \
         uvicorn[standard]>=0.32.0 \
