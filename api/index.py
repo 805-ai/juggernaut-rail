@@ -14,17 +14,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 from threading import Lock
-from contextlib import asynccontextmanager
 
-import structlog
-from fastapi import FastAPI, HTTPException, Depends, Header
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+import logging
+logger = logging.getLogger(__name__)
+
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
-from mangum import Mangum
-
-logger = structlog.get_logger()
 
 
 # ============================================================================
@@ -538,50 +533,6 @@ class GovernanceGate:
 
 
 # ============================================================================
-# PYDANTIC MODELS
-# ============================================================================
-
-class OperationRequest(BaseModel):
-    action: str = Field(..., description="Action type")
-    target_resource: str = Field(...)
-    parameters: Dict[str, Any] = Field(default_factory=dict)
-    agent_id: str = Field(...)
-    purpose: str = Field(default="INFERENCE")
-    data_category: str = Field(default="TEXT")
-    cdt: Optional[str] = None
-
-
-class ConsentRequest(BaseModel):
-    subject_id: str
-    partner_id: str
-    purposes: List[str]
-    data_categories: List[str]
-    retention_days: int = 365
-    jurisdiction: str = "GDPR_EU"
-
-
-class RevocationRequest(BaseModel):
-    subject_id: Optional[str] = None
-    reason: str = "USER_REQUEST"
-
-
-class GateResponse(BaseModel):
-    decision: str
-    receipt_id: Optional[str]
-    cdt: Optional[str]
-    trust_score: float
-    latency_ms: float
-    error: Optional[str]
-
-
-class HealthResponse(BaseModel):
-    status: str
-    version: str
-    epoch: int
-    uptime_seconds: float
-
-
-# ============================================================================
 # APPLICATION STATE
 # ============================================================================
 
@@ -599,257 +550,264 @@ class AppState:
         self.start_time = datetime.now(timezone.utc)
 
 
-app_state: Optional[AppState] = None
+# Initialize app state on module load for serverless
+app_state = AppState()
 
 
-# ============================================================================
-# FASTAPI APPLICATION
-# ============================================================================
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global app_state
-    app_state = AppState()
-    yield
+# Vercel Python handler
+from http.server import BaseHTTPRequestHandler
 
 
-app = FastAPI(
-    title="Juggernaut Rail",
-    description="Cryptographic AI Governance Rail - NO RECEIPT, NO RUN",
-    version="1.0.0",
-    lifespan=lifespan,
-)
+class handler(BaseHTTPRequestHandler):
+    """Vercel Python serverless handler for FastAPI."""
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+    def do_GET(self):
+        self._handle_request("GET")
 
+    def do_POST(self):
+        self._handle_request("POST")
 
-def get_state() -> AppState:
-    if app_state is None:
-        raise HTTPException(status_code=503, detail="Application not initialized")
-    return app_state
+    def do_OPTIONS(self):
+        self.send_response(200)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-API-Key")
+        self.end_headers()
 
+    def _handle_request(self, method):
+        import urllib.parse
 
-def verify_api_key(x_api_key: str = Header(..., alias="X-API-Key")) -> str:
-    expected = os.environ.get("API_KEY", "dev-key-change-in-production")
-    if x_api_key != expected:
-        raise HTTPException(status_code=401, detail="Invalid API key")
-    return x_api_key
+        path = urllib.parse.urlparse(self.path).path
+        query = urllib.parse.urlparse(self.path).query
 
+        # Get headers
+        headers = {k.lower(): v for k, v in self.headers.items()}
 
-# ============================================================================
-# ENDPOINTS
-# ============================================================================
+        # Get body for POST
+        body = None
+        if method == "POST":
+            content_length = int(self.headers.get("Content-Length", 0))
+            if content_length > 0:
+                body = self.rfile.read(content_length).decode("utf-8")
 
-@app.get("/health", response_model=HealthResponse)
-async def health_check(state: AppState = Depends(get_state)):
-    uptime = (datetime.now(timezone.utc) - state.start_time).total_seconds()
-    return HealthResponse(
-        status="healthy",
-        version="1.0.0",
-        epoch=state.epoch_manager.global_epoch.current,
-        uptime_seconds=uptime,
-    )
+        # Route handling
+        response_data = None
+        status_code = 200
 
-
-@app.post("/gate", response_model=GateResponse)
-async def gate_operation(
-    request: OperationRequest,
-    state: AppState = Depends(get_state),
-    api_key: str = Depends(verify_api_key),
-):
-    try:
-        action = ReceiptAction[request.action.upper()]
-    except KeyError:
-        raise HTTPException(status_code=400, detail=f"Invalid action: {request.action}")
-
-    try:
-        purpose = Purpose[request.purpose.upper()]
-    except KeyError:
-        purpose = Purpose.INFERENCE
-
-    try:
-        data_category = DataCategory[request.data_category.upper()]
-    except KeyError:
-        data_category = DataCategory.TEXT
-
-    operation = OperationPayload(
-        action=action,
-        target_resource=request.target_resource,
-        parameters=request.parameters,
-        agent_id=request.agent_id,
-    )
-
-    policy = state.policy_store.get_for_pair(request.agent_id, "default_partner")
-    if not policy:
-        policy = FullPolicyState(
-            subject_id=request.agent_id,
-            partner_id="default_partner",
-            purposes={Purpose.INFERENCE, Purpose.ANALYTICS},
-            data_categories={DataCategory.TEXT},
-            retention_period_days=365,
-            jurisdiction=Jurisdiction.GDPR_EU,
-        )
-        state.policy_store.store(policy)
-
-    result = state.gate.gate(
-        operation=operation,
-        policy=policy,
-        presented_cdt=request.cdt,
-        purpose=purpose,
-        data_category=data_category,
-        tenant_id=request.agent_id,
-    )
-
-    if result["receipt"]:
-        state.receipt_chain.add(result["receipt"])
-
-    return GateResponse(
-        decision=result["decision"].value,
-        receipt_id=result["receipt"].receipt_id if result["receipt"] else None,
-        cdt=result["cdt"].token_value if result.get("cdt") else None,
-        trust_score=result["trust_score"],
-        latency_ms=result["latency_ms"],
-        error=result["error_message"],
-    )
-
-
-@app.post("/consent")
-async def create_consent(
-    request: ConsentRequest,
-    state: AppState = Depends(get_state),
-    api_key: str = Depends(verify_api_key),
-):
-    purposes = set()
-    for p in request.purposes:
         try:
-            purposes.add(Purpose[p.upper()])
-        except KeyError:
-            raise HTTPException(status_code=400, detail=f"Invalid purpose: {p}")
+            if path == "/health" or path == "/":
+                uptime = (datetime.now(timezone.utc) - app_state.start_time).total_seconds()
+                response_data = {
+                    "status": "healthy",
+                    "version": "1.0.0",
+                    "epoch": app_state.epoch_manager.global_epoch.current,
+                    "uptime_seconds": uptime,
+                }
 
-    categories = set()
-    for c in request.data_categories:
-        try:
-            categories.add(DataCategory[c.upper()])
-        except KeyError:
-            raise HTTPException(status_code=400, detail=f"Invalid data category: {c}")
+            elif path == "/public-key":
+                response_data = {
+                    "key_id": app_state.gate.receipt_generator.signer.key_id,
+                    "algorithm": app_state.gate.receipt_generator.signer.algorithm,
+                    "public_key_pem": app_state.gate.receipt_generator.signer.get_public_key_pem(),
+                }
 
-    try:
-        jurisdiction = Jurisdiction[request.jurisdiction.upper()]
-    except KeyError:
-        jurisdiction = Jurisdiction.GLOBAL
+            elif path == "/metrics":
+                api_key = headers.get("x-api-key", "")
+                expected = os.environ.get("API_KEY", "dev-key-change-in-production")
+                if api_key != expected:
+                    status_code = 401
+                    response_data = {"error": "Invalid API key"}
+                else:
+                    gate_metrics = app_state.gate.get_metrics()
+                    usage = app_state.penny_counter.get_tenant_usage("default")
+                    response_data = {
+                        "gate": gate_metrics,
+                        "epoch": {
+                            "current": app_state.epoch_manager.global_epoch.current,
+                            "history_length": len(app_state.epoch_manager.global_epoch.get_history()),
+                        },
+                        "receipts": {"total": len(app_state.receipt_chain.receipts)},
+                        "billing": usage,
+                    }
 
-    policy = FullPolicyState(
-        subject_id=request.subject_id,
-        partner_id=request.partner_id,
-        purposes=purposes,
-        data_categories=categories,
-        retention_period_days=request.retention_days,
-        jurisdiction=jurisdiction,
-    )
+            elif path == "/receipts/verify":
+                api_key = headers.get("x-api-key", "")
+                expected = os.environ.get("API_KEY", "dev-key-change-in-production")
+                if api_key != expected:
+                    status_code = 401
+                    response_data = {"error": "Invalid API key"}
+                else:
+                    is_valid, error = app_state.receipt_chain.verify_chain_integrity()
+                    response_data = {
+                        "valid": is_valid,
+                        "error": error,
+                        "chain_length": len(app_state.receipt_chain.receipts),
+                        "merkle_root": app_state.receipt_chain.to_merkle_root(),
+                    }
 
-    policy_id = state.policy_store.store(policy)
+            elif path == "/gate" and method == "POST":
+                api_key = headers.get("x-api-key", "")
+                expected = os.environ.get("API_KEY", "dev-key-change-in-production")
+                if api_key != expected:
+                    status_code = 401
+                    response_data = {"error": "Invalid API key"}
+                else:
+                    request_data = json.loads(body) if body else {}
 
-    cdt_policy = PolicyState(
-        subject_id=policy.subject_id,
-        partner_id=policy.partner_id,
-        purposes=tuple(p.value for p in policy.purposes),
-        data_categories=tuple(d.value for d in policy.data_categories),
-        retention_period_days=policy.retention_period_days,
-        jurisdiction=policy.jurisdiction.value,
-    )
-    cdt = state.gate.cdt_generator.generate(cdt_policy, state.epoch_manager.global_epoch.current)
+                    try:
+                        action = ReceiptAction[request_data.get("action", "INVOKE").upper()]
+                    except KeyError:
+                        action = ReceiptAction.INVOKE
 
-    return {
-        "policy_id": policy_id,
-        "cdt": cdt.token_value,
-        "epoch": state.epoch_manager.global_epoch.current,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
+                    try:
+                        purpose = Purpose[request_data.get("purpose", "INFERENCE").upper()]
+                    except KeyError:
+                        purpose = Purpose.INFERENCE
 
+                    try:
+                        data_category = DataCategory[request_data.get("data_category", "TEXT").upper()]
+                    except KeyError:
+                        data_category = DataCategory.TEXT
 
-@app.post("/revoke")
-async def revoke_consent(
-    request: RevocationRequest,
-    state: AppState = Depends(get_state),
-    api_key: str = Depends(verify_api_key),
-):
-    if request.subject_id:
-        new_epoch = state.epoch_manager.revoke_subject(request.subject_id, request.reason)
-        scope = f"subject:{request.subject_id}"
-    else:
-        new_epoch = state.epoch_manager.revoke_global(request.reason)
-        scope = "global"
+                    agent_id = request_data.get("agent_id", "anonymous")
+                    target_resource = request_data.get("target_resource", "default")
 
-    state.penny_counter.record_revocation("system", new_epoch)
+                    operation = OperationPayload(
+                        action=action,
+                        target_resource=target_resource,
+                        parameters=request_data.get("parameters", {}),
+                        agent_id=agent_id,
+                    )
 
-    return {
-        "new_epoch": new_epoch,
-        "scope": scope,
-        "reason": request.reason,
-        "effect": "ALL_PRIOR_CDTS_INVALIDATED",
-        "revoked_at": datetime.now(timezone.utc).isoformat(),
-    }
+                    policy = app_state.policy_store.get_for_pair(agent_id, "default_partner")
+                    if not policy:
+                        policy = FullPolicyState(
+                            subject_id=agent_id,
+                            partner_id="default_partner",
+                            purposes={Purpose.INFERENCE, Purpose.ANALYTICS},
+                            data_categories={DataCategory.TEXT},
+                            retention_period_days=365,
+                            jurisdiction=Jurisdiction.GDPR_EU,
+                        )
+                        app_state.policy_store.store(policy)
 
+                    result = app_state.gate.gate(
+                        operation=operation,
+                        policy=policy,
+                        presented_cdt=request_data.get("cdt"),
+                        purpose=purpose,
+                        data_category=data_category,
+                        tenant_id=agent_id,
+                    )
 
-@app.get("/receipts")
-async def get_receipts(
-    agent_id: Optional[str] = None,
-    limit: int = 100,
-    state: AppState = Depends(get_state),
-    api_key: str = Depends(verify_api_key),
-):
-    receipts = state.receipt_chain.receipts[-limit:]
-    if agent_id:
-        receipts = [r for r in receipts if r.agent_id == agent_id]
-    return {"total": len(receipts), "receipts": [r.to_dict() for r in receipts]}
+                    if result["receipt"]:
+                        app_state.receipt_chain.add(result["receipt"])
 
+                    response_data = {
+                        "decision": result["decision"].value,
+                        "receipt_id": result["receipt"].receipt_id if result["receipt"] else None,
+                        "cdt": result["cdt"].token_value if result.get("cdt") else None,
+                        "trust_score": result["trust_score"],
+                        "latency_ms": result["latency_ms"],
+                        "error": result["error_message"],
+                    }
 
-@app.get("/receipts/verify")
-async def verify_receipt_chain(
-    state: AppState = Depends(get_state),
-    api_key: str = Depends(verify_api_key),
-):
-    is_valid, error = state.receipt_chain.verify_chain_integrity()
-    return {
-        "valid": is_valid,
-        "error": error,
-        "chain_length": len(state.receipt_chain.receipts),
-        "merkle_root": state.receipt_chain.to_merkle_root(),
-    }
+            elif path == "/consent" and method == "POST":
+                api_key = headers.get("x-api-key", "")
+                expected = os.environ.get("API_KEY", "dev-key-change-in-production")
+                if api_key != expected:
+                    status_code = 401
+                    response_data = {"error": "Invalid API key"}
+                else:
+                    request_data = json.loads(body) if body else {}
 
+                    purposes = set()
+                    for p in request_data.get("purposes", []):
+                        try:
+                            purposes.add(Purpose[p.upper()])
+                        except KeyError:
+                            pass
 
-@app.get("/metrics")
-async def get_metrics(
-    state: AppState = Depends(get_state),
-    api_key: str = Depends(verify_api_key),
-):
-    gate_metrics = state.gate.get_metrics()
-    usage = state.penny_counter.get_tenant_usage("default")
-    return {
-        "gate": gate_metrics,
-        "epoch": {
-            "current": state.epoch_manager.global_epoch.current,
-            "history_length": len(state.epoch_manager.global_epoch.get_history()),
-        },
-        "receipts": {"total": len(state.receipt_chain.receipts)},
-        "billing": usage,
-    }
+                    categories = set()
+                    for c in request_data.get("data_categories", []):
+                        try:
+                            categories.add(DataCategory[c.upper()])
+                        except KeyError:
+                            pass
 
+                    try:
+                        jurisdiction = Jurisdiction[request_data.get("jurisdiction", "GLOBAL").upper()]
+                    except KeyError:
+                        jurisdiction = Jurisdiction.GLOBAL
 
-@app.get("/public-key")
-async def get_public_key(state: AppState = Depends(get_state)):
-    return {
-        "key_id": state.gate.receipt_generator.signer.key_id,
-        "algorithm": state.gate.receipt_generator.signer.algorithm,
-        "public_key_pem": state.gate.receipt_generator.signer.get_public_key_pem(),
-    }
+                    policy = FullPolicyState(
+                        subject_id=request_data.get("subject_id", ""),
+                        partner_id=request_data.get("partner_id", ""),
+                        purposes=purposes or {Purpose.INFERENCE},
+                        data_categories=categories or {DataCategory.TEXT},
+                        retention_period_days=request_data.get("retention_days", 365),
+                        jurisdiction=jurisdiction,
+                    )
 
+                    policy_id = app_state.policy_store.store(policy)
 
-# Vercel handler
-handler = Mangum(app, lifespan="auto")
+                    cdt_policy = PolicyState(
+                        subject_id=policy.subject_id,
+                        partner_id=policy.partner_id,
+                        purposes=tuple(p.value for p in policy.purposes),
+                        data_categories=tuple(d.value for d in policy.data_categories),
+                        retention_period_days=policy.retention_period_days,
+                        jurisdiction=policy.jurisdiction.value,
+                    )
+                    cdt = app_state.gate.cdt_generator.generate(cdt_policy, app_state.epoch_manager.global_epoch.current)
+
+                    response_data = {
+                        "policy_id": policy_id,
+                        "cdt": cdt.token_value,
+                        "epoch": app_state.epoch_manager.global_epoch.current,
+                        "created_at": datetime.now(timezone.utc).isoformat(),
+                    }
+
+            elif path == "/revoke" and method == "POST":
+                api_key = headers.get("x-api-key", "")
+                expected = os.environ.get("API_KEY", "dev-key-change-in-production")
+                if api_key != expected:
+                    status_code = 401
+                    response_data = {"error": "Invalid API key"}
+                else:
+                    request_data = json.loads(body) if body else {}
+
+                    subject_id = request_data.get("subject_id")
+                    reason = request_data.get("reason", "USER_REQUEST")
+
+                    if subject_id:
+                        new_epoch = app_state.epoch_manager.revoke_subject(subject_id, reason)
+                        scope = f"subject:{subject_id}"
+                    else:
+                        new_epoch = app_state.epoch_manager.revoke_global(reason)
+                        scope = "global"
+
+                    app_state.penny_counter.record_revocation("system", new_epoch)
+
+                    response_data = {
+                        "new_epoch": new_epoch,
+                        "scope": scope,
+                        "reason": reason,
+                        "effect": "ALL_PRIOR_CDTS_INVALIDATED",
+                        "revoked_at": datetime.now(timezone.utc).isoformat(),
+                    }
+
+            else:
+                status_code = 404
+                response_data = {"error": "Not found", "path": path}
+
+        except Exception as e:
+            status_code = 500
+            response_data = {"error": str(e)}
+
+        # Send response
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps(response_data).encode("utf-8"))
