@@ -3,15 +3,22 @@ JUGGERNAUT RAIL - Billing Module
 
 Patent Reference: "CDT + Penny Counter for AI-Driven Billing and Compliance"
 
-Key Innovation: Unified compliance + monetization in single rail
-- Each governance receipt increments a penny counter
-- Usage tracked per-operation, per-purpose, per-partner
-- Integrated Stripe settlement
+Penny Counter: Local usage metering for license enforcement and compliance.
+- Tracks operations per tenant
+- Enforces license tier limits
+- Provides audit trail for compliance
+- Stripe integration for settlement
 """
 
 from .penny_counter import PennyCounter, UsageRecord, BillingTier
 from .metering import MeteringEngine, GasCalculator
-from .stripe_integration import StripeSettlement, InvoiceGenerator
+from .license import LicenseManager, LicenseKey, LicenseTier
+from .stripe_integration import (
+    StripeIntegration,
+    StripeSettlementService,
+    StripeCustomer,
+    StripeIntegrationError,
+)
 
 __all__ = [
     "PennyCounter",
@@ -19,6 +26,11 @@ __all__ = [
     "BillingTier",
     "MeteringEngine",
     "GasCalculator",
-    "StripeSettlement",
-    "InvoiceGenerator",
+    "LicenseManager",
+    "LicenseKey",
+    "LicenseTier",
+    "StripeIntegration",
+    "StripeSettlementService",
+    "StripeCustomer",
+    "StripeIntegrationError",
 ]

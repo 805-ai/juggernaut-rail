@@ -1,1 +1,27 @@
-# No dependencies - pure Python serverless handler
+# JUGGERNAUT RAIL - Production Dependencies
+# License-based deployment
+
+# Web Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+mangum>=0.17.0  # Serverless adapter
+
+# Pydantic for validation
+pydantic>=2.5.0
+
+# Cryptography
+cryptography>=41.0.0
+# liboqs-python  # Optional: ML-DSA-65 post-quantum (pip install liboqs-python)
+
+# Database
+psycopg2-binary>=2.9.9  # PostgreSQL (production)
+# SQLite is built-in
+
+# Logging
+structlog>=23.2.0
+
+# HTTP client
+httpx>=0.25.0
+
+# Billing (optional - graceful degradation if not installed)
+stripe>=7.0.0
