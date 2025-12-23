@@ -1,0 +1,95 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "juggernaut-rail"
+version = "1.0.0"
+description = "Cryptographic AI Governance Infrastructure - NO RECEIPT, NO RUN"
+readme = "README.md"
+license = {text = "Proprietary"}
+authors = [
+    {name = "Abraham Manzano", email = "abraham@finalbosstech.com"}
+]
+maintainers = [
+    {name = "FinalBoss Tech", email = "support@finalbosstech.com"}
+]
+keywords = [
+    "ai-governance",
+    "consent-management",
+    "cryptographic-receipts",
+    "post-quantum",
+    "ml-dsa",
+    "gdpr",
+    "hipaa",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.5.0",
+    "cryptography>=41.0.0",
+    "structlog>=23.2.0",
+    "httpx>=0.25.0",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg2-binary>=2.9.9"]
+pqc = ["liboqs-python"]
+server = ["mangum>=0.17.0"]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+]
+all = [
+    "juggernaut-rail[postgres,pqc,server,dev]",
+]
+
+[project.urls]
+Homepage = "https://finalbosstech.com"
+Documentation = "https://docs.finalbosstech.com/juggernaut-rail"
+Repository = "https://github.com/805-ai/juggernaut-rail"
+
+[project.scripts]
+juggernaut-rail = "juggernaut_rail.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.setuptools.package-dir]
+juggernaut_rail = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"

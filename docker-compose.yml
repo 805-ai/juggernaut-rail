@@ -1,57 +1,70 @@
 version: '3.8'
 
+# JUGGERNAUT RAIL - License-Based Deployment
+# Customer deploys this in their infrastructure
+
 services:
   juggernaut-rail:
-    build: .
+    build:
+      context: .
+      target: production
     container_name: juggernaut-rail
     ports:
-      - "8000:8000"
+      - "${PORT:-8000}:8000"
     environment:
       - PORT=8000
-      - API_KEY=${API_KEY:-dev-key-change-in-production}
+      - API_KEY=${API_KEY:?API_KEY is required}
+      - LICENSE_KEY=${LICENSE_KEY:?LICENSE_KEY is required}
+      - DATABASE_URL=${DATABASE_URL:-sqlite:///data/juggernaut.db}
+      - KEY_MASTER_SECRET=${KEY_MASTER_SECRET:?KEY_MASTER_SECRET is required}
+      - KEY_STORAGE_PATH=/data/keys
       - CORS_ORIGINS=${CORS_ORIGINS:-*}
-      - STRIPE_API_KEY=${STRIPE_API_KEY:-sk_test_placeholder}
-      - DEBUG=${DEBUG:-false}
+      - DEBUG=false
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - juggernaut_data:/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 15s
     restart: unless-stopped
     networks:
       - juggernaut-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 1G
+    security_opt:
+      - no-new-privileges:true
 
-  # Optional: MongoDB for receipt persistence
-  mongodb:
-    image: mongo:7
-    container_name: juggernaut-mongodb
-    ports:
-      - "27017:27017"
+  # PostgreSQL (optional - for production)
+  postgres:
+    image: postgres:16-alpine
+    container_name: juggernaut-postgres
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=admin
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASSWORD:-changeme}
+      - POSTGRES_USER=${POSTGRES_USER:-juggernaut}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      - POSTGRES_DB=${POSTGRES_DB:-juggernaut}
     volumes:
-      - mongodb_data:/data/db
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-juggernaut}"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
     networks:
       - juggernaut-network
     profiles:
-      - with-mongodb
-
-  # Optional: Redis for caching
-  redis:
-    image: redis:7-alpine
-    container_name: juggernaut-redis
-    ports:
-      - "6379:6379"
-    networks:
-      - juggernaut-network
-    profiles:
-      - with-redis
+      - with-postgres
 
 networks:
   juggernaut-network:
     driver: bridge
 
 volumes:
-  mongodb_data:
+  juggernaut_data:
+  postgres_data:
